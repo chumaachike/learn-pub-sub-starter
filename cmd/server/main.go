@@ -24,6 +24,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("could not create channel: %v", err)
 	}
+	defer channel.Close()
+
+	err = channel.ExchangeDeclare(
+		routing.ExchangePerilTopic,
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("could not declare topic exchange: %v", err)
+	}
+
+	err = channel.ExchangeDeclare(
+		routing.ExchangePerilDirect,
+		"direct",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("could not declare direct exchange: %v", err)
+	}
 
 	_, q, err := pubsub.DeclareAndBind(conn, routing.ExchangePerilTopic, routing.GameLogSlug, routing.GameLogSlug+".*", pubsub.QueueDurable)
 	if err != nil {
