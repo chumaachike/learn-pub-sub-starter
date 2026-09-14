@@ -1,9 +1,10 @@
 package pubsub
 
 import (
+	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
-	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -70,6 +71,74 @@ func SubscribeJSON[T any](
 	queueType SimpleQueueType,
 	handler func(T) Acktype,
 ) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		queueType,
+		handler,
+		func(data []byte) (T, error) {
+			var target T
+
+			reader := bytes.NewReader(data)
+			dec := gob.NewDecoder(reader)
+
+			err := dec.Decode(&target)
+			return target, err
+
+		},
+	)
+}
+
+func PublishGob(ch *amqp.Channel, exchange, key, val string) error {
+	var buffer bytes.Buffer
+	enc := gob.NewEncoder(&buffer)
+
+	if err := enc.Encode(val); err != nil {
+		return err
+	}
+	ch.PublishWithContext(context.Background(),
+		exchange, key, false, false,
+		amqp.Publishing{ContentType: "application/gob", Body: buffer.Bytes()})
+	return nil
+}
+
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	simpleQueueType SimpleQueueType,
+	handler func(T) Acktype,
+) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		simpleQueueType,
+		handler,
+		func(data []byte) (T, error) {
+			var target T
+
+			reader := bytes.NewReader(data)
+			decoder := gob.NewDecoder(reader)
+
+			err := decoder.Decode(&target)
+			return target, err
+		},
+	)
+}
+
+func subscribe[T any](conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) Acktype,
+	unmarshaller func([]byte) (T, error),
+) error {
 	channel, _, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
 		return err
@@ -80,25 +149,22 @@ func SubscribeJSON[T any](
 	}
 	go func() {
 		for delivery := range deliveries {
-			var data T
-			if err := json.Unmarshal(delivery.Body, &data); err != nil {
-				continue
+			target, err := unmarshaller(delivery.Body)
+			if err != nil {
+				delivery.Nack(false, false)
 			}
 
-			switch akType := handler(data); akType {
+			acktype := handler(target)
+
+			switch acktype {
 			case Ack:
 				delivery.Ack(false)
-				fmt.Println("Ack")
 			case NackRequeue:
 				delivery.Nack(false, true)
-				fmt.Println("NackR")
 			case NackDiscard:
 				delivery.Nack(false, false)
-				fmt.Println("NackD")
 			}
-
 		}
 	}()
-
 	return nil
 }
