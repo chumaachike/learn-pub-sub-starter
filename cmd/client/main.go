@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
 
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/gamelogic"
 	"github.com/bootdotdev/learn-pub-sub-starter/internal/pubsub"
@@ -13,19 +10,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func handlerPause(gs *gamelogic.GameState) func(routing.PlayingState) {
-	return func(ps routing.PlayingState) {
-		defer fmt.Print("> ")
-		gs.HandlePause(ps)
-	}
-}
-
-func handlerMove(gs *gamelogic.GameState) func(gamelogic.ArmyMove) {
-	return func(move gamelogic.ArmyMove) {
-		defer fmt.Print("> ")
-		gs.HandleMove(move)
-	}
-}
 func main() {
 	fmt.Println("Starting Peril client...")
 	connString := "amqp://guest:guest@localhost:5672/"
@@ -55,10 +39,21 @@ func main() {
 		log.Fatalf("could not subscribe to pause: %v", err)
 	}
 
-	_, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, routing.ArmyMovesPrefix+"."+name, routing.ArmyMovesPrefix+".*", pubsub.QueueTransient, handlerMove(gamestate))
+	err = pubsub.SubscribeJSON(conn, routing.ExchangePerilTopic, routing.ArmyMovesPrefix+"."+name, routing.ArmyMovesPrefix+".*", pubsub.QueueTransient, handlerMove(gamestate, channel))
+	if err != nil {
+		log.Fatalf("could not subscribe to army moves: %v", err)
+	}
+	err = pubsub.SubscribeJSON(
+		conn,
+		routing.ExchangePerilTopic,
+		routing.WarRecognitionsPrefix,
+		routing.WarRecognitionsPrefix+".*",
+		pubsub.QueueDurable,
+		handlerWar(gamestate),
+	)
+	if err != nil {
+		log.Fatalf("could not subscribe to war declarations: %v", err)
+	}
 	for {
 		words := gamelogic.GetInput()
 
@@ -71,13 +66,32 @@ func main() {
 			mv, err := gamestate.CommandMove(words)
 			if err != nil {
 				fmt.Println(err)
+				continue
 			}
-			pubsub.PublishJSON(channel, routing.ExchangePerilTopic, routing.ArmyMovesPrefix+".*", mv)
+
+			routingKey := fmt.Sprintf(
+				"%s.%s",
+				routing.ArmyMovesPrefix,
+				name,
+			)
+
+			err = pubsub.PublishJSON(
+				channel,
+				routing.ExchangePerilTopic,
+				routingKey,
+				mv,
+			)
+			if err != nil {
+				fmt.Printf("could not publish move: %v\n", err)
+				continue
+			}
+
 			log.Println("move published")
 
 		case "spawn":
 			if err := gamestate.CommandSpawn(words); err != nil {
 				fmt.Println(err)
+				continue
 			}
 
 		case "status":

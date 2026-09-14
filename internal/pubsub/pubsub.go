@@ -3,12 +3,19 @@ package pubsub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type SimpleQueueType int
+type Acktype int
 
+const (
+	Ack Acktype = iota
+	NackRequeue
+	NackDiscard
+)
 const (
 	QueueDurable SimpleQueueType = iota
 	QueueTransient
@@ -39,7 +46,16 @@ func DeclareAndBind(
 
 	isDurable := queueType == QueueDurable
 
-	q, err := ch.QueueDeclare(queueName, isDurable, !isDurable, !isDurable, false, nil)
+	q, err := ch.QueueDeclare(
+		queueName,
+		isDurable,
+		!isDurable,
+		!isDurable,
+		false,
+		amqp.Table{
+			"x-dead-letter-exchange": "peril_dlx",
+		},
+	)
 	if err = ch.QueueBind(queueName, key, exchange, false, nil); err != nil {
 		return nil, amqp.Queue{}, err
 	}
@@ -52,7 +68,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) Acktype,
 ) error {
 	channel, _, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -68,8 +84,19 @@ func SubscribeJSON[T any](
 			if err := json.Unmarshal(delivery.Body, &data); err != nil {
 				continue
 			}
-			handler(data)
-			delivery.Ack(false)
+
+			switch akType := handler(data); akType {
+			case Ack:
+				delivery.Ack(false)
+				fmt.Println("Ack")
+			case NackRequeue:
+				delivery.Nack(false, true)
+				fmt.Println("NackR")
+			case NackDiscard:
+				delivery.Nack(false, false)
+				fmt.Println("NackD")
+			}
+
 		}
 	}()
 
