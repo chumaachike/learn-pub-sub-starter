@@ -143,6 +143,10 @@ func subscribe[T any](conn *amqp.Connection,
 	if err != nil {
 		return err
 	}
+	if err = channel.Qos(10, 0, false); err != nil {
+		return err
+	}
+
 	deliveries, err := channel.Consume(queueName, "", false, false, false, false, nil)
 	if err != nil {
 		return err
